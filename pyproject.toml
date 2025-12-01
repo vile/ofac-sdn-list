@@ -1,0 +1,10 @@
+[project]
+name = "ofac-sdn-crypto-address-extract"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "lxml>=6.0.2",
+    "toml>=0.10.2",
+]

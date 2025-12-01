@@ -1,0 +1,94 @@
+name: OFAC SDN XML Conversion
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *" # Daily at 06:00 UTC
+
+env:
+  OFAC_SDN_ZIP_URL: https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ENHANCED.ZIP
+
+jobs:
+  convert-ofac-xml:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Load previous ZIP hash from cache
+        uses: actions/cache@v4
+        id: cache-hash
+        with:
+          path: .ofac_hash
+          key: ofac-zip-hash
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Download OFAC SDN zip
+        run: |
+          curl -L "${{ env.OFAC_SDN_ZIP_URL }}" -o SDN.zip
+
+      - name: Extract zip
+        run: unzip SDN.zip
+
+      - name: Generate zip hash
+        id: hash
+        run: |
+          sha256sum SDN_ENHANCED.XML | awk '{print $1}' > current_hash.txt
+          echo "current_hash=$(cat current_hash.txt)" >> $GITHUB_OUTPUT
+
+      - name: Compare current hash to previous hash
+        id: compare
+        run: |
+          if [ -f ".ofac_hash" ]; then
+            echo "Previous hash: $(cat .ofac_hash)"
+            echo "Current hash:  $(cat current_hash.txt)"
+            if diff .ofac_hash current_hash.txt >/dev/null; then
+              echo "No changes detected — exiting workflow."
+              echo "changed=false" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+          fi
+
+          echo "Changes detected — continuing workflow."
+          echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Abort if no changes
+        if: steps.compare.outputs.changed == 'false'
+        run: echo "No update to OFAC file; workflow completed."
+
+      - name: Save new hash
+        if: steps.compare.outputs.changed == 'true'
+        run: cp current_hash.txt .ofac_hash
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Convert XML -> XML, JSON, TOML, CSV, TXT
+        id: convert
+        if: steps.compare.outputs.changed == 'true'
+        run: |
+          set -e
+          python3 convert.py \
+            --xml SDN_ENHANCED.XML \
+            --out out/
+        continue-on-error: true
+
+      - name: Fail job if conversion failed
+        if: steps.compare.outputs.changed == 'true' && steps.convert.outcome == 'failure'
+        run: |
+          echo "Conversion failed. Aborting workflow."
+          exit 1
+
+      - name: Upload artifacts
+        if: steps.compare.outputs.changed == 'true' && steps.convert.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ofac-outputs
+          path: out/
