@@ -93,3 +93,6 @@ jobs:
             **Generated Files:** JSON, TOML, CSV, TXT
           files: |
             out/*
+
+permissions:
+  contents: write
