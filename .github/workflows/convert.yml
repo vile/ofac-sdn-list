@@ -80,12 +80,18 @@ jobs:
             --out out/
         continue-on-error: true
 
+      - name: Get current time
+        id: time
+        if: steps.compare.outputs.changed == 'true' && steps.convert.outcome == 'success'
+        run: |
+          echo "now=$(date -u +'%Y-%m-%d %H:%M:%S')" >> >> $GITHUB_OUTPUT
+
       - name: Create GitHub Release
         if: steps.compare.outputs.changed == 'true' && steps.convert.outcome == 'success'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "ofac-${{ steps.hash.outputs.current_hash }}"
-          name: 'OFAC SDN Update – $(date -u +"%Y-%m-%d")'
+          name: 'OFAC SDN Update – ${{ steps.time.outputs.now }}'
           body: |
             New OFAC SDN Enhanced XML detected and processed.
 
