@@ -84,7 +84,7 @@ jobs:
         id: time
         if: steps.compare.outputs.changed == 'true' && steps.convert.outcome == 'success'
         run: |
-          echo "now=$(date -u +'%Y-%m-%d %H:%M:%S')" >> >> $GITHUB_OUTPUT
+          echo "now=$(date -u +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         if: steps.compare.outputs.changed == 'true' && steps.convert.outcome == 'success'
