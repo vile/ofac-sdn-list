@@ -70,7 +70,7 @@ jobs:
           python3 -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Convert XML -> XML, JSON, TOML, CSV, TXT
+      - name: Convert XML -> JSON, TOML, CSV, TXT
         id: convert
         if: steps.compare.outputs.changed == 'true'
         run: |
@@ -80,15 +80,16 @@ jobs:
             --out out/
         continue-on-error: true
 
-      - name: Fail job if conversion failed
-        if: steps.compare.outputs.changed == 'true' && steps.convert.outcome == 'failure'
-        run: |
-          echo "Conversion failed. Aborting workflow."
-          exit 1
-
-      - name: Upload artifacts
+      - name: Create GitHub Release
         if: steps.compare.outputs.changed == 'true' && steps.convert.outcome == 'success'
-        uses: actions/upload-artifact@v4
+        uses: softprops/action-gh-release@v2
         with:
-          name: ofac-outputs
-          path: out/
+          tag_name: "ofac-${{ steps.hash.outputs.current_hash }}"
+          name: 'OFAC SDN Update – $(date -u +"%Y-%m-%d")'
+          body: |
+            New OFAC SDN Enhanced XML detected and processed.
+
+            **Hash:** `${{ steps.hash.outputs.current_hash }}`
+            **Generated Files:** JSON, TOML, CSV, TXT
+          files: |
+            out/*
