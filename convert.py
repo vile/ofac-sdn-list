@@ -15,6 +15,18 @@ DIGITAL_CURRENCY_ADDRESS: Final[str] = "Digital Currency Address"
 
 
 def parse_ofac_xml(path: Path) -> list[DigitalCurrencyAddress]:
+    """
+    Parse out all cryptocurrency addresses from OFAC's SDN XML list.
+
+    Params
+    ------
+        path (Path): Path to the XML file
+
+    Returns
+    -------
+        list[DigitalCurrencyAddress]: List of parsed cryptocurrency addresses
+
+    """
     tree = etree.parse(path)
     root = tree.getroot()
     entities_parent = root.find("ofac:entities", NS)
@@ -52,7 +64,7 @@ def parse_args() -> argparse.Namespace:
 
     Returns
     -------
-        argparse.Namespace
+        argparse.Namespace: Args
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
