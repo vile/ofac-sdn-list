@@ -1,10 +1,11 @@
 import csv
 import json
 from abc import ABC, abstractmethod
+from dataclasses import asdict
 
 import toml
+
 from .digital_currency_address import DigitalCurrencyAddress
-from dataclasses import asdict
 
 
 class Writer(ABC):

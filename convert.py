@@ -1,13 +1,12 @@
 import argparse
 import os
-
 from pathlib import Path
 from typing import Final
 
 from lxml import etree
-from util.writers import JSONWriter, TOMLWriter, CSVWriter, TextWriter
-from util.digital_currency_address import DigitalCurrencyAddress
 
+from util.digital_currency_address import DigitalCurrencyAddress
+from util.writers import CSVWriter, JSONWriter, TextWriter, TOMLWriter
 
 NS: Final[dict[str, str]] = {
     "ofac": "https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/ENHANCED_XML"
