@@ -2,103 +2,193 @@ name: OFAC SDN XML Conversion
 
 on:
   workflow_dispatch:
+    inputs:
+      force:
+        description: Reprocess even if this OFAC version already has a release
+        required: false
+        type: boolean
+        default: false
+
   schedule:
     - cron: "0 6 * * *" # Daily at 06:00 UTC
 
+permissions: {}
+
+concurrency: # Limit to only one processing job
+  group: ofac-sdn-conversion
+  cancel-in-progress: false
+
 env:
-  OFAC_SDN_ZIP_URL: https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ENHANCED.ZIP
+  OFAC_SDN_ZIP_URL: >-
+    https://sanctionslistservice.ofac.treas.gov/api/PublicationPreview/exports/SDN_ENHANCED.ZIP
 
 jobs:
   convert-ofac-xml:
-    runs-on: ubuntu-latest
+    name: Convert and publish OFAC SDN data
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    permissions:
+      contents: write
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Load previous ZIP hash from cache
-        uses: actions/cache@v4
-        id: cache-hash
-        with:
-          path: .ofac_hash
-          key: ofac-zip-hash
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Download OFAC SDN zip
+      - name: Download, validate, and hash source XML
+        id: source
+        env:
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -L "${{ env.OFAC_SDN_ZIP_URL }}" -o SDN.zip
+          set -euo pipefail
 
-      - name: Extract zip
-        run: unzip SDN.zip
+          archive="${RUNNER_TEMP}/SDN_ENHANCED.zip"
+          xml="${RUNNER_TEMP}/SDN_ENHANCED.XML"
 
-      - name: Generate zip hash
-        id: hash
-        run: |
-          sha256sum SDN_ENHANCED.XML | awk '{print $1}' > current_hash.txt
-          echo "current_hash=$(cat current_hash.txt)" >> $GITHUB_OUTPUT
+          curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --proto '=https' \
+            --tlsv1.2 \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 15 \
+            --max-time 300 \
+            --output "$archive" \
+            "$OFAC_SDN_ZIP_URL"
 
-      - name: Compare current hash to previous hash
-        id: compare
-        run: |
-          if [ -f ".ofac_hash" ]; then
-            echo "Previous hash: $(cat .ofac_hash)"
-            echo "Current hash:  $(cat current_hash.txt)"
-            if diff .ofac_hash current_hash.txt >/dev/null; then
-              echo "No changes detected — exiting workflow."
-              echo "changed=false" >> $GITHUB_OUTPUT
-              exit 0
-            fi
+          unzip -tq "$archive"
+
+          # Check if zip contains expected XML file.
+          if ! unzip -Z1 "$archive" |
+            grep --fixed-strings --line-regexp --quiet 'SDN_ENHANCED.XML'
+          then
+            echo "::error::SDN_ENHANCED.XML was not present in the archive"
+            exit 1
           fi
 
-          echo "Changes detected — continuing workflow."
-          echo "changed=true" >> $GITHUB_OUTPUT
+          # Extract only the expected file. Do not unpack arbitrary archive paths.
+          unzip -p "$archive" 'SDN_ENHANCED.XML' > "$xml"
 
-      - name: Abort if no changes
-        if: steps.compare.outputs.changed == 'false'
-        run: echo "No update to OFAC file; workflow completed."
+          if [[ ! -s "$xml" ]]; then
+            echo "::error::Extracted XML is empty"
+            exit 1
+          fi
 
-      - name: Save new hash
-        if: steps.compare.outputs.changed == 'true'
-        run: cp current_hash.txt .ofac_hash
+          size=$(stat --format='%s' "$xml")
+          if (( size > 1073741824 )); then
+            echo "::error::Extracted XML exceeds the 1 GiB safety limit"
+            exit 1
+          fi
+
+          hash=$(sha256sum "$xml" | awk '{print $1}')
+          tag="ofac-${hash}"
+
+          printf 'hash=%s\n' "$hash" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$tag" >> "$GITHUB_OUTPUT"
+          printf 'OFAC_XML=%s\n' "$xml" >> "$GITHUB_ENV"
+
+          if [[ "$FORCE" == "true" ]]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Forced reprocessing requested."
+            exit 0
+          fi
+
+          # The hash-based release is the durable record of processed input.
+          set +e
+          error=$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
+              >/dev/null 2>&1
+          )
+          status=$?
+          set -e
+
+          if (( status == 0 )); then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "A release already exists for XML hash ${hash}."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "New XML hash detected: ${hash}."
+          fi
+
+      - name: Checkout repository
+        if: steps.source.outputs.changed == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        if: steps.source.outputs.changed == 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
 
       - name: Install dependencies
+        if: steps.source.outputs.changed == 'true'
         run: |
-          python3 -m pip install --upgrade pip
-          pip install -r requirements.txt
+          set -euo pipefail
+          python -m pip install \
+            --disable-pip-version-check \
+            --requirement requirements.txt
 
-      - name: Convert XML -> JSON, TOML, CSV, TXT
-        id: convert
-        if: steps.compare.outputs.changed == 'true'
+      - name: Convert XML
+        if: steps.source.outputs.changed == 'true'
         run: |
-          set -e
-          python3 convert.py \
-            --xml SDN_ENHANCED.XML \
+          set -euo pipefail
+
+          python convert.py \
+            --xml "$OFAC_XML" \
             --out out/
-        continue-on-error: true
 
-      - name: Get current time
-        id: time
-        if: steps.compare.outputs.changed == 'true' && steps.convert.outcome == 'success'
+      - name: Validate generated files and create checksums
+        if: steps.source.outputs.changed == 'true'
         run: |
-          echo "now=$(date -u +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_OUTPUT
+          set -euo pipefail
 
-      - name: Create GitHub Release
-        if: steps.compare.outputs.changed == 'true' && steps.convert.outcome == 'success'
-        uses: softprops/action-gh-release@v2
+          if [[ ! -d out ]] ||
+             ! find out -maxdepth 1 -type f -print -quit | grep --quiet .
+          then
+            echo "::error::Conversion produced no files"
+            exit 1
+          fi
+
+          (
+            cd out
+            find . \
+              -maxdepth 1 \
+              -type f \
+              ! -name SHA256SUMS \
+              -print0 |
+              sort --zero-terminated |
+              xargs --null sha256sum > SHA256SUMS
+          )
+
+      - name: Get release timestamp
+        id: time
+        if: steps.source.outputs.changed == 'true'
+        run: |
+          printf 'now=%s\n' \
+            "$(date --utc +'%Y-%m-%d %H:%M:%S UTC')" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        if: steps.source.outputs.changed == 'true'
+        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
-          tag_name: "ofac-${{ steps.hash.outputs.current_hash }}"
-          name: 'OFAC SDN Update – ${{ steps.time.outputs.now }}'
+          token: ${{ github.token }}
+          tag_name: ${{ steps.source.outputs.tag }}
+          name: OFAC SDN Update – ${{ steps.time.outputs.now }}
           body: |
             New OFAC SDN Enhanced XML detected and processed.
 
-            **Hash:** `${{ steps.hash.outputs.current_hash }}`
-            **Generated Files:** JSON, TOML, CSV, TXT
-          files: |
-            out/*
-
-permissions:
-  contents: write
+            **Source XML SHA-256:** `${{ steps.source.outputs.hash }}`
+            **Generated formats:** JSON, TOML, CSV, TXT
+          files: out/*
+          fail_on_unmatched_files: true
